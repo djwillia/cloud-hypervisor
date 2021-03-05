@@ -179,6 +179,37 @@ fn create_app<'a, 'b>(
                 .group("vm-config"),
         )
         .arg(
+            Arg::with_name("relocs")
+                .long("relocs")
+                .help("Path to kernel relocs")
+                .takes_value(true)
+                .group("vm-config"),
+        )
+        .arg(
+            Arg::with_name("phys_offset")
+                .long("phys_offset")
+                .help("Physical offset (default 0x1000000)")
+                .takes_value(true)
+                .default_value("0x1000000")
+                .group("vm-config"),
+        )
+        .arg(
+            Arg::with_name("virt_offset")
+                .long("virt_offset")
+                .help("Virtual offset (default 0x0)")
+                .takes_value(true)
+                .default_value("0x0")
+                .group("vm-config"),
+        )
+        .arg(
+            Arg::with_name("kaslr")
+                .long("kaslr")
+                .help("whether to use kaslr [on | off]")
+                .takes_value(true)
+                .default_value("off")
+                .group("vm-config"),
+        )
+        .arg(
             Arg::with_name("cmdline")
                 .long("cmdline")
                 .help("Kernel command line")
@@ -373,12 +404,16 @@ fn start_vmm(cmd_arguments: ArgMatches, api_socket_path: &str) -> Result<(), Err
 
         println!(
             "Cloud Hypervisor Guest\n\tAPI server: {}\n\tvCPUs: {}\n\tMemory: {} MB\n\tKernel: \
-             {:?}\n\tInitramfs: {:?}\n\tKernel cmdline: {}\n\tDisk(s): {:?}",
+             {:?}\n\tInitramfs: {:?}\n\tRelocs: {:?}\n\tPhys_Offset: {:?}\n\tVirt_Offset: {:?}\n\tDJW Kaslr: {:?}\n\tKernel cmdline: {}\n\tDisk(s): {:?}",
             api_socket_path,
             vm_config.cpus.boot_vcpus,
             vm_config.memory.size >> 20,
             vm_config.kernel,
             vm_config.initramfs,
+            vm_config.relocs,
+            vm_config.phys_offset,
+            vm_config.virt_offset,
+            vm_config.kaslr,
             vm_config.cmdline.args.as_str(),
             vm_config.disks,
         );
@@ -557,6 +592,7 @@ mod unit_tests {
                     path: PathBuf::from("/path/to/kernel"),
                 }),
                 initramfs: None,
+                relocs: None,
                 cmdline: CmdlineConfig {
                     args: String::from(""),
                 },

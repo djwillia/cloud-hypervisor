@@ -600,7 +600,7 @@ checksum = "0ee1c47aaa256ecabcaea351eae4a9b01ef39ed810004e298d2511ed284b1525"
 [[package]]
 name = "micro_http"
 version = "0.1.0"
-source = "git+https://github.com/firecracker-microvm/micro-http?branch=master#59ab64440a95f7b16253fef67b5201c2ec4adaf7"
+source = "git+https://github.com/firecracker-microvm/micro-http#59ab64440a95f7b16253fef67b5201c2ec4adaf7"
 dependencies = [
  "epoll",
 ]
@@ -618,7 +618,7 @@ dependencies = [
 [[package]]
 name = "mshv-bindings"
 version = "0.1.0"
-source = "git+https://github.com/cloud-hypervisor/mshv?branch=master#2ded6daf97976aa27c1aca47964672c201a7d17d"
+source = "git+https://github.com/cloud-hypervisor/mshv#2ded6daf97976aa27c1aca47964672c201a7d17d"
 dependencies = [
  "libc",
  "serde",
@@ -630,7 +630,7 @@ dependencies = [
 [[package]]
 name = "mshv-ioctls"
 version = "0.1.0"
-source = "git+https://github.com/cloud-hypervisor/mshv?branch=master#2ded6daf97976aa27c1aca47964672c201a7d17d"
+source = "git+https://github.com/cloud-hypervisor/mshv#2ded6daf97976aa27c1aca47964672c201a7d17d"
 dependencies = [
  "libc",
  "mshv-bindings",
@@ -1569,6 +1569,7 @@ dependencies = [
  "arch",
  "bitflags 1.2.1",
  "block_util",
+ "byteorder",
  "clap",
  "credibility",
  "devices",
@@ -1583,6 +1584,7 @@ dependencies = [
  "option_parser",
  "pci",
  "qcow",
+ "rand 0.7.3",
  "seccomp",
  "serde",
  "serde_derive",

@@ -11,6 +11,14 @@
 // SPDX-License-Identifier: Apache-2.0 AND BSD-3-Clause
 //
 
+//use std::io::Read;
+extern crate byteorder;
+use byteorder::{ByteOrder, LittleEndian};
+extern crate rand;
+use rand::thread_rng;
+use rand::Rng;
+
+
 extern crate arch;
 extern crate devices;
 extern crate epoll;
@@ -96,6 +104,9 @@ pub enum Error {
 
     /// Cannot open the initramfs image
     InitramfsFile(io::Error),
+
+    /// Cannot open the relocs image
+    RelocsFile(io::Error),
 
     /// Cannot load the kernel in memory
     KernelLoad(linux_loader::loader::Error),
@@ -442,6 +453,10 @@ pub fn physical_bits(max_phys_bits: Option<u8>) -> u8 {
 pub struct Vm {
     kernel: File,
     initramfs: Option<File>,
+    relocs: Option<File>,
+    phys_offset: u32,
+    virt_offset: u32,
+    kaslr: bool,
     threads: Vec<thread::JoinHandle<()>>,
     device_manager: Arc<Mutex<DeviceManager>>,
     config: Arc<Mutex<VmConfig>>,
@@ -538,9 +553,43 @@ impl Vm {
             .transpose()
             .map_err(Error::InitramfsFile)?;
 
+        let relocs = config
+            .lock()
+            .unwrap()
+            .relocs
+            .as_ref()
+            .map(|i| File::open(&i.path))
+            .transpose()
+            .map_err(Error::RelocsFile)?;
+        
+        let phys_offset = config
+            .lock()
+            .unwrap()
+            .phys_offset
+            .as_ref()
+            .unwrap()
+            .addr;
+
+        let virt_offset = config
+            .lock()
+            .unwrap()
+            .virt_offset
+            .as_ref()
+            .unwrap()
+            .addr;
+
+        let kaslr = config
+            .lock()
+            .unwrap()
+            .kaslr;
+
         Ok(Vm {
             kernel,
             initramfs,
+            relocs,
+            phys_offset,
+            virt_offset,
+            kaslr,
             device_manager,
             config,
             on_tty,
@@ -801,6 +850,132 @@ impl Vm {
         Ok(CString::new(cmdline).map_err(Error::CmdLineCString)?)
     }
 
+    // DJW: this is caclulated the same as in arch/x86/boot/compressed/kaslr.c
+    fn find_random_virt_addr(&mut self,
+                             align:u32,
+                             minimum:u32,
+                             mut image_size:u32)->std::io::Result<u32> {
+        image_size = (image_size + (align - 1)) - ((image_size + align - 1) % align);
+
+        let slots = ((1024 * 1024 * 1024) - minimum - image_size) / align + 1;
+        let randslot = thread_rng().gen_range(0, slots);
+        println!("DJW: randslot is {}/{}", randslot, slots);
+
+        Ok(randslot * align + minimum)
+    }
+
+    // DJW: this is simplified from what linux does but experimentally should work
+    fn find_random_phys_offset(&mut self,
+                             align:u32,
+                             minimum:u32)->std::io::Result<u32> {
+        let mut image_size = self.kernel.metadata()?.len() as u32;
+        image_size = (image_size + (align - 1)) - ((image_size + align - 1) % align);
+        let memory = self.config.lock().unwrap().memory.size as u32;
+        
+        let slots = (memory - minimum - image_size) / align + 1;
+        let randslot = thread_rng().gen_range(0, slots);
+        println!("DJW: phys randslot is {}/{}", randslot, slots);
+
+        Ok(randslot * align)
+    }
+
+    // djw_offset is the physical offset; this function is to do
+    // relocs for the virtual offset
+    fn handle_relocations(&mut self, djw_offset:u32)->std::io::Result<()> {
+        let guest_memory = self.memory_manager.lock().as_ref().unwrap().guest_memory();
+        let mem = guest_memory.memory();
+
+        //magic numbers
+        let align = 0x200000;
+        let minimum = 0x1000000;
+        let image_size = self.kernel.metadata()?.len();
+        
+        // this is the "random offset in the virtual address space
+        let mut virtoff = self.virt_offset;
+        if self.kaslr {
+            println!("DJW: KASLR WAS SPECIFIED, overwriting virtoff!");
+            virtoff = self.find_random_virt_addr(align, minimum,
+                                                 image_size.try_into().unwrap())
+                .unwrap();
+        }
+        
+        // this comes from __START_KERNEL_map in the Linux guest
+        let kernel_vaddr_start = 0x80000000u32;
+        
+        //let filename = "/home/djwillia/pvhrando-scripts/chguest.vmlinux.relocs";
+        //let mut f = File::open(filename)?;
+        //let filename = self.relocs;
+
+        let mut contents = Vec::new();
+        let mut relocs = self.relocs.as_ref().unwrap();
+        //f.read_to_end(&mut contents)?;
+        relocs.read_to_end(&mut contents)?;
+        
+        let mut p = contents.len() - 4;
+
+        // 32-bit relocations
+        loop {
+            let addr = LittleEndian::read_u32(&contents[p..(p+4)]);
+            p -= 4;
+            if addr != 0 {
+                let reloc_buf = &mut [0u8; 4];
+                mem.deref().read(reloc_buf, GuestAddress((djw_offset + addr - kernel_vaddr_start).into()));
+                let mut reloc_addr = LittleEndian::read_u32(reloc_buf);
+                reloc_addr = reloc_addr + virtoff as u32;
+                
+                let mut buf = [0; 4];
+                LittleEndian::write_u32(&mut buf, reloc_addr);
+                mem.deref().write(&mut buf, GuestAddress((djw_offset + addr - kernel_vaddr_start).into()));
+            } else {
+                break;
+            }
+        }
+        // 32-bit inverse relocations
+        loop {
+            let addr = LittleEndian::read_u32(&contents[p..(p+4)]);
+            p -= 4;
+            if addr != 0 {
+                let reloc_buf = &mut [0u8; 4];
+                mem.deref().read(reloc_buf, GuestAddress((djw_offset + addr - kernel_vaddr_start).into()));
+                let mut reloc_addr = LittleEndian::read_u32(reloc_buf);
+                reloc_addr = reloc_addr - virtoff as u32;
+                
+                let mut buf = [0; 4];
+                LittleEndian::write_u32(&mut buf, reloc_addr);
+                mem.deref().write(&mut buf, GuestAddress((djw_offset + addr - kernel_vaddr_start).into()));
+            } else {
+                break;
+            }
+        }
+
+        // 64-bit relocations
+        loop {
+            let addr = LittleEndian::read_u32(&contents[p..(p+4)]);
+            if addr != 0 {
+                let reloc_buf = &mut [0u8; 8];
+                mem.deref().read(reloc_buf, GuestAddress((djw_offset + addr - kernel_vaddr_start).into()));
+                let mut reloc_addr = LittleEndian::read_u64(reloc_buf);
+                reloc_addr = reloc_addr + virtoff as u64;
+                
+                let mut buf = [0; 8];
+                LittleEndian::write_u64(&mut buf, reloc_addr);
+                mem.deref().write(&mut buf, GuestAddress((djw_offset + addr - kernel_vaddr_start).into()));
+            } else {
+                break;
+            }
+            p -= 4;
+        }
+        assert!(p == 0);
+
+        
+        
+        println!("DJW: handle_relocations:");
+        let buf = &mut [0u8; 5];
+        mem.deref().read(buf, GuestAddress((djw_offset+0x1000000).into()));
+        println!("DJW: handle_relocations {:?}", buf);
+        Ok(())
+    }
+
     #[cfg(target_arch = "aarch64")]
     fn load_kernel(&mut self) -> Result<EntryPoint> {
         let guest_memory = self.memory_manager.lock().as_ref().unwrap().guest_memory();
@@ -826,12 +1001,22 @@ impl Vm {
 
     #[cfg(target_arch = "x86_64")]
     fn load_kernel(&mut self) -> Result<EntryPoint> {
+        let mut djw_offset = self.phys_offset - 0x1000000;
         let cmdline_cstring = self.get_cmdline()?;
         let guest_memory = self.memory_manager.lock().as_ref().unwrap().guest_memory();
+
+        if self.kaslr {
+            let align = 0x200000;
+            let minimum = 0x1000000;
+            println!("DJW: KASLR WAS SPECIFIED! overwriting phys_offset");
+            djw_offset = self.find_random_phys_offset(align, minimum).unwrap();
+        }
+        
         let mem = guest_memory.memory();
         let entry_addr = match linux_loader::loader::elf::Elf::load(
             mem.deref(),
-            None,
+            //            None,
+            Some(GuestAddress(djw_offset.into())),
             &mut self.kernel,
             Some(arch::layout::HIGH_RAM_START),
         ) {
@@ -850,6 +1035,8 @@ impl Vm {
             }
         };
 
+        self.handle_relocations(djw_offset);
+        
         linux_loader::loader::load_cmdline(
             mem.deref(),
             arch::layout::CMDLINE_START,

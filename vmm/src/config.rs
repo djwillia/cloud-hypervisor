@@ -186,6 +186,10 @@ pub struct VmParams<'a> {
     pub memory_zones: Option<Vec<&'a str>>,
     pub kernel: Option<&'a str>,
     pub initramfs: Option<&'a str>,
+    pub relocs: Option<&'a str>,
+    pub phys_offset: Option<&'a str>,
+    pub virt_offset: Option<&'a str>,
+    pub kaslr: Option<&'a str>,
     pub cmdline: Option<&'a str>,
     pub disks: Option<Vec<&'a str>>,
     pub net: Option<Vec<&'a str>>,
@@ -214,6 +218,10 @@ impl<'a> VmParams<'a> {
 
         let kernel = args.value_of("kernel");
         let initramfs = args.value_of("initramfs");
+        let relocs = args.value_of("relocs");
+        let phys_offset = args.value_of("phys_offset");
+        let virt_offset = args.value_of("virt_offset");
+        let kaslr = args.value_of("kaslr");        
         let cmdline = args.value_of("cmdline");
 
         let disks: Option<Vec<&str>> = args.values_of("disk").map(|x| x.collect());
@@ -235,6 +243,10 @@ impl<'a> VmParams<'a> {
             memory_zones,
             kernel,
             initramfs,
+            relocs,
+            phys_offset,
+            virt_offset,
+            kaslr,
             cmdline,
             disks,
             net,
@@ -585,6 +597,21 @@ pub struct KernelConfig {
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub struct InitramfsConfig {
     pub path: PathBuf,
+}
+
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+pub struct RelocsConfig {
+    pub path: PathBuf,
+}
+
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+pub struct PhysOffsetConfig {
+    pub addr: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+pub struct VirtOffsetConfig {
+    pub addr: u32,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Deserialize, Serialize)]
@@ -1414,6 +1441,10 @@ pub struct VmConfig {
     pub kernel: Option<KernelConfig>,
     #[serde(default)]
     pub initramfs: Option<InitramfsConfig>,
+    pub relocs: Option<RelocsConfig>,
+    pub phys_offset: Option<PhysOffsetConfig>,
+    pub virt_offset: Option<VirtOffsetConfig>,
+    pub kaslr: bool,
     #[serde(default)]
     pub cmdline: CmdlineConfig,
     pub disks: Option<Vec<DiskConfig>>,
@@ -1632,11 +1663,42 @@ impl VmConfig {
             });
         }
 
+        let mut relocs: Option<RelocsConfig> = None;
+        if let Some(k) = vm_params.relocs {
+            relocs = Some(RelocsConfig {
+                path: PathBuf::from(k),
+            });
+        }
+
+        let mut phys_offset: Option<PhysOffsetConfig> = None;
+        if let Some(k) = vm_params.phys_offset {
+            phys_offset = Some(PhysOffsetConfig {
+                addr: u32::from_str_radix(k.trim_start_matches("0x"), 16).unwrap(),
+            });
+        }
+        let mut virt_offset: Option<VirtOffsetConfig> = None;
+        if let Some(k) = vm_params.virt_offset {
+            virt_offset = Some(VirtOffsetConfig {
+                addr: u32::from_str_radix(k.trim_start_matches("0x"), 16).unwrap(),
+            });
+        }
+        let mut kaslr: bool = false;
+        println!("DJW: KASLR is {:?}", kaslr);
+        println!("DJW: vm_params.kaslr is {:?}", vm_params.kaslr);
+        if let Some("on") = vm_params.kaslr {
+            kaslr = true;
+        }
+        println!("DJW: KASLR is {:?}", kaslr);
+        
         let config = VmConfig {
             cpus: CpusConfig::parse(vm_params.cpus)?,
             memory: MemoryConfig::parse(vm_params.memory, vm_params.memory_zones)?,
             kernel,
             initramfs,
+            relocs,
+            phys_offset,
+            virt_offset,
+            kaslr,
             cmdline: CmdlineConfig::parse(vm_params.cmdline)?,
             disks,
             net,
@@ -2203,6 +2265,10 @@ mod tests {
                 path: PathBuf::from("/path/to/kernel"),
             }),
             initramfs: None,
+            relocs: None,
+            phys_offset: None,
+            virt_offset: None,
+            kaslr: None,
             cmdline: CmdlineConfig {
                 args: String::from(""),
             },
